@@ -2,13 +2,14 @@ import { spawn } from 'child_process';
 import readline from 'readline';
 import config from './config.json';
 const { whisperModelPath, audioListenerScript } = config;
-import { talk } from './src/talk';
+import { Dialogue, Role, talk } from './src/talk';
 
 const whisper = require('./bindings/whisper/whisper-addon');
 // INIT GGML CPP BINDINGS
 whisper.init(whisperModelPath);
 
 let globalWhisperPromise: Promise<string>;
+let globalMicrophoneIgnore = false;
 
 // CONSTANTS
 const SAMPLING_RATE = 16000;
@@ -72,16 +73,22 @@ const getLastTranscriptionEvent = (): TranscriptionEvent => {
   const transcriptionEvents = eventlog.events.filter(e => e.eventType === 'transcription');
   return transcriptionEvents[transcriptionEvents.length - 1] as TranscriptionEvent;
 }
+
+const getLastResponseReflexTimestamp = (): number => {
+  const responseReflexEvents = eventlog.events.filter(e => e.eventType === 'responseReflex');
+  return responseReflexEvents.length > 0 ? responseReflexEvents[responseReflexEvents.length - 1].timestamp : eventlog.events[0].timestamp;
+};
+
 const getCutTimestamp = (): number => {
   const cutTranscriptionEvents = eventlog.events.filter(e => e.eventType === 'cutTranscription');
   const lastCut = cutTranscriptionEvents.length > 0 ? cutTranscriptionEvents[cutTranscriptionEvents.length - 1].data.lastAudioByteEventTimestamp : eventlog.events[0].timestamp;
-  const responseReflexEvents = eventlog.events.filter(e => e.eventType === 'responseReflex');
-  const lastResponseReflex = responseReflexEvents.length > 0 ? responseReflexEvents[responseReflexEvents.length - 1].timestamp : eventlog.events[0].timestamp;
+  const lastResponseReflex = getLastResponseReflexTimestamp();
   return Math.max(lastResponseReflex, lastCut);
-
 }
+
 const getTransciptionSoFar = (): string => {
-  const cutTranscriptionEvents = eventlog.events.filter(e => e.eventType === 'cutTranscription');
+  const lastResponseReflex = getLastResponseReflexTimestamp();
+  const cutTranscriptionEvents = eventlog.events.filter(e => e.eventType === 'cutTranscription' && e.timestamp > lastResponseReflex);
   const lastTranscriptionEvent = getLastTranscriptionEvent();
   const lastCutTranscriptionEvent = cutTranscriptionEvents[cutTranscriptionEvents.length - 1];
   let transcription = cutTranscriptionEvents.map(e => e.data.transcription).join(' ');
@@ -90,38 +97,39 @@ const getTransciptionSoFar = (): string => {
   }
   return transcription
 }
-const getDialogue = (): string => {
+
+const getDialogue = (): Dialogue => {
   const dialogueEvents = eventlog.events
     .filter(e => e.eventType === 'responseReflex' || e.eventType === 'talk');
 
-  let result = [];
-  let lastType = null;
+  let result: Dialogue = [];
+  let lastType: Role | null = null;
   let mergedText = '';
 
   for (let e of dialogueEvents) {
-    const currentSpeaker = e.eventType === 'responseReflex' ? 'alice' : 'bob';
+    const currentSpeaker = e.eventType === 'responseReflex' ? 'user' : 'assistant';
     const currentText = e.eventType === 'responseReflex' ? e.data.transcription : e.data.response;
 
     if (lastType && lastType === currentSpeaker) {
       mergedText += ' ' + currentText;
     } else {
-      if (mergedText) result.push(mergedText);
-      mergedText = `${currentSpeaker}: ${currentText}`;
+      if (mergedText && lastType) result.push({ role: lastType, content: mergedText });
+      mergedText = currentText;
     }
 
     lastType = currentSpeaker;
   }
 
   // push last merged text
-  if (mergedText) result.push(mergedText);
+  if (mergedText && lastType) result.push({ role: lastType, content: mergedText });
 
-  return result.join('\n');
+  return result;
 }
 
-// const updateScreenEvents: Set<EventType> = new Set([])
 const updateScreenEvents: Set<EventType> = new Set(['responseReflex', 'cutTranscription', 'talk'])
 const updateScreen = (event: Event) => {
   if (updateScreenEvents.has(event.eventType)) {
+    console.log(`Dialogue: [mic: ${globalMicrophoneIgnore ? 'off' : 'on'}]`)
     console.log(getDialogue())
     console.log(event);
   }
@@ -141,13 +149,31 @@ const newEventHandler = (event: Event): void => {
   }
 }
 
+let histerises = false;
 const newAudioBytesEvent = (buffer: Buffer): void => {
+  // can it be this simple?
+  if (globalMicrophoneIgnore) {
+    histerises = true;
+    return;
+  }
+  
+  // Hackily ignore final bytes while we were supposed to ignore.
+  if (histerises) {
+    histerises = false;
+    return;
+  }
+
   const audioBytesEvent: AudioBytesEvent = {
     timestamp: Number(Date.now()),
     eventType: 'audioBytes',
     data: { buffer }
   }
   newEventHandler(audioBytesEvent);
+}
+
+
+function cleanTranscription(transcription: string): string {
+  return transcription.replace(/[\[\(] ?inaudible ?[\]\)]/gi, '').trim();
 }
 
 let transcriptionMutex = false;
@@ -165,12 +191,13 @@ const transcriptionEventHandler = async (event: AudioBytesEvent) => {
     transcriptionMutex = true;
     globalWhisperPromise = whisper.whisperInferenceOnBytes(joinedBuffer);
     const transcription = await globalWhisperPromise;
+    
     const transcriptionEvent: TranscriptionEvent = {
       timestamp: Number(Date.now()),
       eventType: 'transcription',
       data: {
         buffer: joinedBuffer,
-        transcription,
+        transcription: cleanTranscription(transcription),
         lastAudioByteEventTimestamp: audioBytesEvents[audioBytesEvents.length - 1].timestamp
       }
     }
@@ -180,8 +207,7 @@ const transcriptionEventHandler = async (event: AudioBytesEvent) => {
 }
 
 const cutTranscriptionEventHandler = async (event: TranscriptionEvent) => {
-  const cutTranscriptionEvents = eventlog.events.filter(e => e.eventType === 'cutTranscription');
-  const lastCut = cutTranscriptionEvents.length > 0 ? cutTranscriptionEvents[cutTranscriptionEvents.length - 1].timestamp : eventlog.events[0].timestamp;
+  const lastCut = getCutTimestamp();
   const timeDiff = event.timestamp - lastCut;
   if (timeDiff > BUFFER_LENGTH_MS) {
     const cutTranscriptionEvent: CutTranscriptionEvent = {
@@ -209,8 +235,16 @@ const responseReflexEventHandler = async (): Promise<void> => {
   newEventHandler(responseReflexEvent);
 }
 
-const talkEventHandler = (event: ResponseReflexEvent): void => {
+const prompts = {
+  basic: "Continue the dialogue, speak for bob only.\nDo not include any responses for alice.\nMake it a fun lighthearted conversation.",
+  chinese: "You are a Chinese teacher, please reply using basic Chinese and shorter sentences."
+}
+
+const talkEventHandler = async (event: ResponseReflexEvent): Promise<void> => {
+  globalMicrophoneIgnore = true;
+
   const talkCallback = (sentence: string) => {
+
     const talkEvent: TalkEvent = {
       timestamp: Number(Date.now()),
       eventType: 'talk',
@@ -221,11 +255,13 @@ const talkEventHandler = (event: ResponseReflexEvent): void => {
     newEventHandler(talkEvent);
   };
   const input = getDialogue();
-  talk(
-    "Continue the dialogue, speak for bob only. \nMake it a fun lighthearted conversation.",
+  await talk(
+    prompts.chinese,
     input,
     talkCallback
   );
+
+  globalMicrophoneIgnore = false;
 }
 
 // Defines the DAG through which events trigger each other

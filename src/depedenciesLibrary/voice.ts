@@ -22,7 +22,7 @@ export const generateAudio = (text: string): Promise<string> => {
       }
     }
 
-    exec(`echo "${text}" | piper --model ${modelPath} --output_file ${outputFilePath}`, (error) => {
+    exec(`echo "${text}" | piper/piper --model ${modelPath} --output_file ${outputFilePath}`, (error) => {
       if (error) {
         console.error(`exec error: ${error}`);
         reject(error);

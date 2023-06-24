@@ -1,10 +1,18 @@
 import axios from 'axios';
+import { Dialogue, Role } from '../talk';
 
 const API_URL = 'http://127.0.0.1:8080'
 
-export const llamaInvoke = (prompt: string, input: string, onDataFunction: (data: string) => void): Promise<string> => {
-  const formattedPrompt = `### Instruction:\n ${prompt} \n ### Input:\n ${input} \n ### Response:\nbob:\n`;
+const speakerMap: { [k in Role]: string } = {
+  assistant: 'bob',
+  user: 'alice',
+}
+
+export const llamaInvoke = (prompt: string, input: Dialogue, onDataFunction: (data: string) => void): Promise<string> => {
+  const inputString = input.map(message => `${speakerMap[message.role]}: ${message.content}`).join('\n');
+  const formattedPrompt = `### Instruction:\n ${prompt} \n ### Input:\n ${inputString} \n ### Response:\nbob:\n`;
   let answer = '';
+
   return new Promise(async (resolve, reject) => {
     const response = await axios({
       method: 'post',
@@ -24,8 +32,9 @@ export const llamaInvoke = (prompt: string, input: string, onDataFunction: (data
       const t = Buffer.from(data).toString('utf8');
       if (t.startsWith('data: ')) {
         const message = JSON.parse(t.substring(6))
-        answer += message.content;
-        onDataFunction(message.content)
+        const content = message.content.replace(/[^a-zA-Z0-9 .,!?'\n-]/g, '');
+        answer += content;
+        onDataFunction(content)
       }
     });
     response.data.on('end', () => {

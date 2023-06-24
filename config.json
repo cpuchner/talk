@@ -1,5 +1,7 @@
 {
-  "whisperModelPath": "/home/kache/models/whisper/ggml-tiny.en.bin",
+  "whisperModelPathSmall": "/home/carl/oss/talk/models/whisper/ggml-tiny.en.bin",
+  "whisperModelPath": "/home/carl/oss/talk/models/whisper/ggml-base.bin",
   "audioListenerScript": "record_audio.sh",
-  "piperModelPath": "~/models/piper/en-gb-southern_english_female-low.onnx"
+  "piperModelPathEnglish": "/home/carl/oss/talk/models/piper/en-gb-southern_english_female-low.onnx",
+  "piperModelPath": "/home/carl/oss/talk/models/piper/zh_CN-huayan-medium.onnx"
 }

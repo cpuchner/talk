@@ -5,6 +5,8 @@ Let's build a conversational engine so we can talk to our computers! [Demo with 
 
 Is this project useful to you? Give me a [**⬆money upvote!⬆**](https://donate.stripe.com/fZedSC6tOdvF7ew9AD)
 
+## Hacks(CARL)
+Whisper node driver - need to modify to support non-english
 
 ## Supported platforms
 Right now, we have been testing this on linux + cuda. The project is still at an early stage; and requires a lot of elbow grease to get running. We'll keep on making it better as time goes on!
